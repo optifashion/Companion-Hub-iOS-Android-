@@ -1,0 +1,146 @@
+plugins {
+    id("com.android.application")
+    kotlin("android")
+    kotlin("kapt")
+}
+
+android {
+    namespace = "com.yourorg.companionhub"
+    compileSdk = 33
+
+    defaultConfig {
+        applicationId = "com.yourorg.companionhub"
+        minSdk = 21
+        targetSdk = 33
+        versionCode = 1
+        versionName = "1.0"
+    }
+    buildFeatures { compose = true }
+    composeOptions { kotlinCompilerExtensionVersion = "1.5.0" }
+}
+
+dependencies {
+    implementation("androidx.core:core-ktx:1.11.0")
+    implementation("androidx.activity:activity-compose:1.8.0")
+    implementation("androidx.compose.ui:ui:1.5.0")
+    implementation("com.apollographql.apollo3:apollo-runtime:4.0.0")
+    implementation("com.google.firebase:firebase-crashlytics-ktx:18.5.2")
+    implementation("com.google.android.gms:play-services-fido:20.5.0")
+    implementation("com.android.billingclient:billing-ktx:6.0.1")
+    implementation("com.google.android.gms:play-services-fitness:21.0.1")
+    implementation("org.tensorflow:tensorflow-lite:2.14.0")
+    
+    // Firebase BOM
+    implementation(platform("com.google.firebase:firebase-bom:32.1.0"))
+}
+
+
+package com.yourorg.companionhub
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import com.apollographql.apollo3.ApolloClient
+import com.google.firebase.crashlytics.ktx.crashlytics
+import com.google.firebase.ktx.Firebase
+import com.google.android.gms.fido.Fido
+import com.android.billingclient.api.*
+import com.google.android.gms.fitness.Fitness
+import org.tensorflow.lite.Interpreter
+import java.nio.MappedByteBuffer
+import java.nio.channels.FileChannel
+
+class MainActivity : ComponentActivity(), PurchasesUpdatedListener {
+    private lateinit var billingClient: BillingClient
+    private lateinit var apollo: ApolloClient
+    private lateinit var tflite: Interpreter
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // Init Crashlytics
+        Firebase.crashlytics.setCrashlyticsCollectionEnabled(true)
+
+        // Apollo GraphQL
+        apollo = ApolloClient.Builder()
+            .serverUrl("https://api.yourservice.com/graphql")
+            .build()
+
+        // BillingClient
+        billingClient = BillingClient.newBuilder(this)
+            .enablePendingPurchases()
+            .setListener(this)
+            .build().also { it.startConnection(object: BillingClientStateListener {
+                override fun onBillingSetupFinished(billingResult: BillingResult) {}
+                override fun onBillingServiceDisconnected() {}
+            }) }
+
+        // Load TFLite model from assets
+        assets.openFd("model.tflite").use { afd ->
+            val buf: MappedByteBuffer = afd.createInputStream().channel.map(
+                FileChannel.MapMode.READ_ONLY, afd.startOffset, afd.declaredLength)
+            tflite = Interpreter(buf)
+        }
+
+        setContent {
+            CompanionHubApp()
+        }
+    }
+
+    @Composable
+    fun CompanionHubApp() {
+        Surface { 
+            Column {
+                Button(onClick = { launchFido2() }) {
+                    Text("Authenticate (FIDO2)")
+                }
+                Spacer(Modifier.height(8.dp))
+                Button(onClick = { purchaseItem("premium_pass") }) {
+                    Text("Buy Premium")
+                }
+                Spacer(Modifier.height(8.dp))
+                Button(onClick = { readGoogleFit() }) {
+                    Text("Fetch Steps")
+                }
+                Spacer(Modifier.height(8.dp))
+                Button(onClick = { runInference() }) {
+                    Text("Run ML Inference")
+                }
+            }
+        }
+    }
+
+    private fun launchFido2() {
+        val client = Fido.getFido2ApiClient(this)
+        // TODO: build and launch FIDO2 request
+    }
+
+    private fun purchaseItem(sku: String) {
+        val params = BillingFlowParams.newBuilder()
+            .setSkuDetails(SkuDetails("", sku, "Premium", BillingClient.SkuType.INAPP, 499))
+            .build()
+        billingClient.launchBillingFlow(this, params)
+    }
+
+    override fun onPurchasesUpdated(br: BillingResult, purchases: MutableList<Purchase>?) {
+        // TODO: handle purchase success/failure
+    }
+
+    private fun readGoogleFit() {
+        Fitness.getHistoryClient(this, /* GoogleSignInAccount */)
+            .readDailyTotal(DataType.TYPE_STEP_COUNT_DELTA)
+            .addOnSuccessListener { dataSet ->
+                val steps = dataSet.dataPoints.firstOrNull()
+                    ?.getValue(Field.FIELD_STEPS)?.asInt() ?: 0
+                // display steps
+            }
+    }
+
+    private fun runInference() {
+        val input = Array(1) { FloatArray(224 * 224 * 3) } // stub input
+        val output = FloatArray(1)
+        tflite.run(input, output)
+        // display output[0]
+    }
+}
